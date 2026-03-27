@@ -156,13 +156,14 @@ export async function searchJobs(
   return response.json();
 }
 
-/**
- * Generate career roadmap (step 4)
- */
+export interface RoadmapResponse {
+  roadmap: string;
+}
+
 export async function generateRoadmap(
   jobTitle: string,
   skillsGap: string,
-): Promise<{ roadmap: string }> {
+): Promise<RoadmapResponse> {
   const formData = new FormData();
   formData.append("job_title", jobTitle);
   formData.append("skills_gap", skillsGap);
@@ -175,6 +176,69 @@ export async function generateRoadmap(
   if (!response.ok) {
     const error = await response.json();
     throw new Error(error.detail || "Roadmap generation failed");
+  }
+
+  return response.json();
+}
+
+// ── Multi-turn Interview Session API ─────────────────────────────────────────
+
+export interface InterviewStartResponse {
+  session_id: string;
+  question: string;
+}
+
+export interface InterviewReplyResponse {
+  feedback: string;
+  score: number;
+  next_question: string;
+  is_done: boolean;
+}
+
+/**
+ * Start a new multi-turn interview session with Sam.
+ * Returns the first question and a session_id.
+ */
+export async function startInterview(
+  jobTitle: string,
+  resumeSummary: string = "",
+): Promise<InterviewStartResponse> {
+  const response = await fetch(`${API_BASE_URL}/interview/start`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ job_title: jobTitle, resume_summary: resumeSummary }),
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.detail || "Failed to start interview");
+  }
+
+  return response.json();
+}
+
+/**
+ * Submit an answer for the current interview question.
+ * Returns feedback, score, the next question, and whether the interview is done.
+ */
+export async function replyInterview(
+  sessionId: string,
+  answer: string,
+  questionNum: number,
+): Promise<InterviewReplyResponse> {
+  const response = await fetch(`${API_BASE_URL}/interview/reply`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      session_id: sessionId,
+      answer,
+      question_num: questionNum,
+    }),
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.detail || "Failed to submit answer");
   }
 
   return response.json();

@@ -5,6 +5,7 @@ Provides RESTful API endpoints that wrap the multi-agent crew pipeline.
 Serves the frontend and handles file uploads, text extraction, and worker orchestration.
 """
 import os
+import uuid
 import tempfile
 from fastapi import FastAPI, File, UploadFile, HTTPException, Form
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,10 +13,16 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from pathlib import Path
+from typing import List, Optional
 
 from config import validate_keys, APP_TITLE, DEBUG, GROQ_API_KEY, SERPER_API_KEY
 from crew import run_pipeline
 from tools.pdf_tool import extract_text_from_pdf
+
+# ── In-memory interview session store ────────────────────────────────────────
+# Maps session_id -> {job_title, resume_summary, history, question_num}
+# Note: resets on server restart — fine for a hackathon/demo
+_interview_sessions: dict = {}
 
 # ── FastAPI App Setup ─────────────────────────────────────────────────────────
 app = FastAPI(
@@ -171,7 +178,105 @@ async def resume_analysis_only(
         raise HTTPException(status_code=500, detail=f"Resume analysis error: {str(e)}")
 
 
-# ── Interview Generation ──────────────────────────────────────────────────────
+# ── Multi-Turn Interview Session Models ──────────────────────────────────────
+class InterviewStartRequest(BaseModel):
+    job_title: str
+    resume_summary: str = ""
+
+class InterviewReplyRequest(BaseModel):
+    session_id: str
+    answer: str
+    question_num: int
+
+
+# ── Start Interview Session ───────────────────────────────────────────────────
+@app.post("/interview/start")
+async def interview_start(request: InterviewStartRequest):
+    """
+    Begin a new multi-turn interview session with Sam.
+    Returns the first question and a session_id for subsequent turns.
+    """
+    try:
+        from agents.interview_agent import start_interview
+
+        if not request.job_title or len(request.job_title.strip()) < 2:
+            raise HTTPException(status_code=400, detail="Job title is required")
+
+        result = start_interview(request.job_title, request.resume_summary)
+        question = result.get("question", result.get("follow_up_or_next", "Tell me about yourself."))
+
+        session_id = str(uuid.uuid4())
+        _interview_sessions[session_id] = {
+            "job_title": request.job_title,
+            "resume_summary": request.resume_summary,
+            "history": [{"role": "assistant", "content": question}],
+            "question_num": 1,
+        }
+
+        return {"session_id": session_id, "question": question}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Interview start error: {str(e)}")
+
+
+# ── Reply to Interview (multi-turn) ──────────────────────────────────────────
+@app.post("/interview/reply")
+async def interview_reply(request: InterviewReplyRequest):
+    """
+    Submit an answer for the current question in a multi-turn session.
+    Returns feedback, score, next question, and whether the interview is done.
+    """
+    try:
+        from agents.interview_agent import evaluate_answer
+
+        session = _interview_sessions.get(request.session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found. Start a new interview.")
+
+        if not request.answer or len(request.answer.strip()) < 2:
+            raise HTTPException(status_code=400, detail="Answer cannot be empty")
+
+        # Append user answer to history
+        session["history"].append({"role": "user", "content": request.answer})
+
+        result = evaluate_answer(
+            job_title=session["job_title"],
+            conversation_history=session["history"],
+            latest_answer=request.answer,
+            question_num=request.question_num,
+            total_questions=8,
+        )
+
+        feedback = result.get("feedback", "Good answer!")
+        score = result.get("score", 7)
+        next_question = result.get("follow_up_or_next", "")
+        is_done = (request.question_num >= 8) or not next_question.strip()
+
+        # Append assistant response to history
+        session["history"].append({
+            "role": "assistant",
+            "content": f"Feedback: {feedback}\n\nNext: {next_question}"
+        })
+        session["question_num"] = request.question_num + 1
+
+        # Clean up session if done
+        if is_done:
+            _interview_sessions.pop(request.session_id, None)
+
+        return {
+            "feedback": feedback,
+            "score": score,
+            "next_question": next_question,
+            "is_done": is_done,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Interview reply error: {str(e)}")
+
+
+# ── Interview Generation (batch/legacy Form endpoint) ────────────────────────
 @app.post("/interview")
 async def generate_interview_questions(
     job_title: str = Form(...),

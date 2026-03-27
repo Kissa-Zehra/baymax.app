@@ -2,6 +2,7 @@
 agents/career_planner_agent.py — Agent 4: Career Roadmap Planner (Rahul)
 
 Builds a personalized 3/6/12-month career roadmap using ChatGroq.
+Now receives job_market_context from Zara (Agent 3) for richer, demand-aligned plans.
 """
 from langchain_groq import ChatGroq
 from langchain_core.messages import SystemMessage
@@ -17,7 +18,9 @@ When building a roadmap:
 - Month 7-12: Job application strategy, networking, communities to join
 
 Include: exact course names (with platform), certifications, community names (local + global).
-Keep it realistic for someone in Pakistan. Don't recommend paid courses exclusively."""
+Keep it realistic for someone in Pakistan. Don't recommend paid courses exclusively.
+
+If job market context is provided, tailor the roadmap to skills currently in demand."""
 
 
 def get_career_planner_agent():
@@ -29,24 +32,38 @@ def get_career_planner_agent():
     )
 
 
-def build_roadmap(job_title: str, skills_gap: str = "", current_skills: str = "") -> str:
+def build_roadmap(
+    job_title: str,
+    skills_gap: str = "",
+    current_skills: str = "",
+    job_market_context: str = "",
+) -> str:
     """
     Build a personalized career development roadmap.
-    
+
     Args:
-        job_title:      Target role the candidate wants to reach
-        skills_gap:     Identified skill gaps (from resume analysis)
-        current_skills: What the candidate already knows
-    
+        job_title:           Target role the candidate wants to reach
+        skills_gap:          Identified skill gaps (from resume analysis — Agent 1)
+        current_skills:      What the candidate already knows
+        job_market_context:  Live job market signals from Zara (Agent 3) — optional
+
     Returns:
         Detailed 3/6/12-month career roadmap.
     """
     llm = get_career_planner_agent()
+
+    market_section = (
+        f"\nJob market context (from live listings):\n{job_market_context}\n"
+        if job_market_context else ""
+    )
+
     user_msg = (
         f"Target role: '{job_title}'\n"
         f"Current skills: {current_skills or 'Not specified'}\n"
-        f"Skill gaps to fill: {skills_gap or 'Identify based on the target role'}\n\n"
-        "Please create a detailed 3/6/12-month career roadmap to help this candidate reach their goal."
+        f"Skill gaps to fill: {skills_gap or 'Identify based on the target role'}\n"
+        f"{market_section}\n"
+        "Please create a detailed 3/6/12-month career roadmap to help this candidate "
+        "reach their goal. Align recommendations with current market demand where possible."
     )
     messages = [
         SystemMessage(content=CAREER_SYSTEM_PROMPT),
