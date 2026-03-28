@@ -334,6 +334,27 @@ async def generate_roadmap(
         raise HTTPException(status_code=500, detail=f"Roadmap generation error: {str(e)}")
 
 
+# ── Audio Transcription ───────────────────────────────────────────────────────
+@app.post("/interview/transcribe")
+async def transcribe_audio_endpoint(file: UploadFile = File(...)):
+    """
+    Transcribe voice audio using Groq Whisper.
+    Accepts any browser audio format (webm, wav, mp4, ogg).
+    Returns: { text: "transcribed text" }
+    """
+    try:
+        from agents.interview_agent import transcribe_audio
+
+        contents = await file.read()
+        if not contents:
+            raise HTTPException(status_code=400, detail="Empty audio file")
+
+        text = transcribe_audio(contents)
+        return {"text": text.strip()}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Transcription error: {str(e)}")
+
+
 # ── Root index.html for SPA ───────────────────────────────────────────────────
 @app.get("/")
 async def serve_index():

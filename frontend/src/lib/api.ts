@@ -243,3 +243,26 @@ export async function replyInterview(
 
   return response.json();
 }
+
+/**
+ * Transcribe voice audio via Groq Whisper on the backend.
+ * Accepts any audio blob from the browser's MediaRecorder.
+ */
+export async function transcribeAudio(
+  audioBlob: Blob,
+): Promise<{ text: string }> {
+  const formData = new FormData();
+  formData.append("file", audioBlob, "recording.webm");
+
+  const response = await fetch(`${API_BASE_URL}/interview/transcribe`, {
+    method: "POST",
+    body: formData,
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.detail || "Transcription failed");
+  }
+
+  return response.json();
+}

@@ -1,136 +1,382 @@
-import { useState } from "react";
-import { Mic, MicOff, CheckCircle, AlertCircle, SkipForward, Square } from "lucide-react";
-import { startInterview, replyInterview } from "@/lib/api";
+import { useState, useRef, useEffect, useCallback } from "react";
+import { Mic, MicOff, Volume2, RotateCcw, Square, ChevronDown } from "lucide-react";
+import { startInterview, replyInterview, transcribeAudio } from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
 
+/* ─── Types ─────────────────────────────────────────────────────────────── */
 interface Props {
   onSwitchTab: (tab: number) => void;
   jobTitle?: string;
   resumeSummary?: string;
 }
 
-type Phase = "setup" | "live" | "done";
+type Mode = "setup" | "speaking" | "listening" | "processing" | "done";
 
-interface TurnResult {
+interface Turn {
   question: string;
   answer: string;
   feedback: string;
   score: number;
 }
 
-const ScoreBadge = ({ score }: { score: number }) => {
-  const color =
-    score >= 8 ? "text-green-400 border-green-400/40 bg-green-400/10"
-    : score >= 6 ? "text-yellow-400 border-yellow-400/40 bg-yellow-400/10"
-    : "text-baymax-red border-baymax-red/40 bg-baymax-red/10";
+/* ─── Animated Orb ──────────────────────────────────────────────────────── */
+const OrbStyles = `
+  @keyframes orb-idle {
+    0%, 100% {
+      border-radius: 60% 40% 30% 70% / 60% 30% 70% 40%;
+      transform: scale(1);
+      box-shadow: 0 0 40px 8px rgba(232,39,43,0.25), 0 0 80px 16px rgba(232,39,43,0.10);
+    }
+    50% {
+      border-radius: 30% 60% 70% 40% / 50% 60% 30% 60%;
+      transform: scale(1.03);
+      box-shadow: 0 0 50px 12px rgba(232,39,43,0.30), 0 0 100px 20px rgba(232,39,43,0.12);
+    }
+  }
+  @keyframes orb-speaking {
+    0%   { border-radius: 60% 40% 30% 70% / 60% 30% 70% 40%; transform: scale(1.00); }
+    15%  { border-radius: 40% 60% 60% 40% / 40% 60% 40% 60%; transform: scale(1.08); }
+    30%  { border-radius: 70% 30% 40% 60% / 50% 40% 60% 50%; transform: scale(1.04); }
+    45%  { border-radius: 50% 50% 30% 70% / 60% 50% 50% 40%; transform: scale(1.10); }
+    60%  { border-radius: 30% 70% 60% 40% / 40% 70% 30% 60%; transform: scale(1.06); }
+    75%  { border-radius: 65% 35% 45% 55% / 55% 35% 65% 45%; transform: scale(1.09); }
+    100% { border-radius: 60% 40% 30% 70% / 60% 30% 70% 40%; transform: scale(1.00); }
+  }
+  @keyframes orb-speaking-glow {
+    0%, 100% {
+      box-shadow: 0 0 60px 15px rgba(232,39,43,0.45), 0 0 120px 30px rgba(232,39,43,0.20), inset 0 0 40px rgba(255,80,80,0.15);
+    }
+    50% {
+      box-shadow: 0 0 80px 25px rgba(232,39,43,0.60), 0 0 160px 50px rgba(232,39,43,0.25), inset 0 0 60px rgba(255,80,80,0.20);
+    }
+  }
+  @keyframes orb-listening {
+    0%, 100% {
+      border-radius: 50%;
+      transform: scale(1.00);
+      box-shadow: 0 0 40px 10px rgba(16,185,129,0.35), 0 0 80px 20px rgba(16,185,129,0.15);
+    }
+    50% {
+      border-radius: 50%;
+      transform: scale(1.05);
+      box-shadow: 0 0 60px 20px rgba(16,185,129,0.50), 0 0 120px 40px rgba(16,185,129,0.20);
+    }
+  }
+  @keyframes orb-processing {
+    0%, 100% {
+      border-radius: 55% 45% 45% 55% / 55% 45% 55% 45%;
+      transform: scale(1) rotate(0deg);
+      box-shadow: 0 0 40px 10px rgba(251,191,36,0.35), 0 0 80px 20px rgba(251,191,36,0.15);
+    }
+    50% {
+      border-radius: 45% 55% 55% 45% / 45% 55% 45% 55%;
+      transform: scale(0.97) rotate(180deg);
+      box-shadow: 0 0 60px 20px rgba(251,191,36,0.50), 0 0 120px 40px rgba(251,191,36,0.20);
+    }
+  }
+  @keyframes ring-pulse {
+    0% { transform: scale(1); opacity: 0.6; }
+    100% { transform: scale(1.8); opacity: 0; }
+  }
+  @keyframes mic-pulse {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.15); }
+  }
+`;
+
+const ORB_CONFIG = {
+  idle:       { color: "from-[#E8272B]/70 via-red-900/50 to-black/70",        label: "Sam",         animStyle: "orb-idle 4s ease-in-out infinite" },
+  speaking:   { color: "from-[#E8272B] via-orange-600/80 to-red-900/60",      label: "Sam speaking", animStyle: "orb-speaking 0.6s ease-in-out infinite, orb-speaking-glow 0.8s ease-in-out infinite" },
+  listening:  { color: "from-emerald-400/80 via-green-600/60 to-teal-900/60", label: "Listening...", animStyle: "orb-listening 1s ease-in-out infinite" },
+  processing: { color: "from-yellow-400/80 via-amber-600/60 to-orange-900/60",label: "Thinking...",  animStyle: "orb-processing 1.2s ease-in-out infinite" },
+  done:       { color: "from-[#E8272B]/50 via-red-900/40 to-black/60",        label: "Done",         animStyle: "orb-idle 6s ease-in-out infinite" },
+};
+
+const AnimatedOrb = ({ mode }: { mode: Mode }) => {
+  const cfg = mode === "done" ? ORB_CONFIG.idle : ORB_CONFIG[mode] ?? ORB_CONFIG.idle;
+  const isListening = mode === "listening";
+  const isSpeaking  = mode === "speaking";
+
   return (
-    <span className={`text-xs font-bold px-2 py-0.5 rounded-full border ${color}`}>
-      {score}/10
-    </span>
+    <div className="relative flex items-center justify-center w-56 h-56 mx-auto select-none">
+      {/* Outer ambient ring — listening pulse */}
+      {isListening && (
+        <>
+          <div className="absolute inset-0 rounded-full border border-emerald-400/40"
+               style={{ animation: "ring-pulse 1.5s ease-out infinite" }} />
+          <div className="absolute inset-0 rounded-full border border-emerald-400/25"
+               style={{ animation: "ring-pulse 1.5s ease-out 0.5s infinite" }} />
+        </>
+      )}
+      {/* Speaking rings */}
+      {isSpeaking && (
+        <>
+          <div className="absolute inset-[-8px] rounded-full border border-baymax-red/35"
+               style={{ animation: "ring-pulse 0.9s ease-out infinite" }} />
+          <div className="absolute inset-[-8px] rounded-full border border-baymax-red/20"
+               style={{ animation: "ring-pulse 0.9s ease-out 0.3s infinite" }} />
+        </>
+      )}
+      {/* Main orb */}
+      <div
+        className={`w-44 h-44 bg-gradient-to-br ${cfg.color} cursor-default`}
+        style={{ animation: cfg.animStyle, willChange: "border-radius, transform, box-shadow" }}
+      >
+        {/* Inner shine */}
+        <div className="absolute inset-[20%_30%_50%_20%] rounded-full bg-white/10 blur-sm" />
+      </div>
+      {/* Baymax face */}
+      <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 pointer-events-none">
+        <svg viewBox="0 0 200 100" width="64" height="32" className="drop-shadow-lg">
+          <ellipse cx="60" cy="50" rx="18" ry={isSpeaking ? 22 : 16} fill="white"
+                   style={{ transition: "ry 0.2s" }} />
+          <ellipse cx="140" cy="50" rx="18" ry={isSpeaking ? 22 : 16} fill="white"
+                   style={{ transition: "ry 0.2s" }} />
+          <ellipse cx="60" cy="50" rx="9" ry={isSpeaking ? 13 : 9} fill="#1a1a1a"
+                   style={{ transition: "ry 0.2s" }} />
+          <ellipse cx="140" cy="50" rx="9" ry={isSpeaking ? 13 : 9} fill="#1a1a1a"
+                   style={{ transition: "ry 0.2s" }} />
+        </svg>
+        {/* Mode label */}
+        <span className="text-[10px] font-bold tracking-widest uppercase text-white/80 mt-1">
+          {cfg.label}
+        </span>
+      </div>
+    </div>
   );
 };
 
+/* ─── Waveform bar (for listening state) ───────────────────────────────── */
+const WaveBar = ({ delay }: { delay: number }) => (
+  <div
+    className="w-1 bg-emerald-400 rounded-full"
+    style={{
+      height: "100%",
+      animation: `mic-pulse ${0.5 + delay * 0.15}s ease-in-out infinite`,
+      animationDelay: `${delay * 0.1}s`,
+    }}
+  />
+);
+
+/* ─── Main Component ────────────────────────────────────────────────────── */
 const InterviewCoach = ({
   onSwitchTab,
   jobTitle = "",
   resumeSummary = "",
 }: Props) => {
   const { toast } = useToast();
-  const [userJobTitle, setUserJobTitle] = useState(jobTitle);
-  const [phase, setPhase] = useState<Phase>("setup");
 
-  // Session state
+  /* State */
+  const [userJobTitle, setUserJobTitle] = useState(jobTitle);
+  const [mode, setMode] = useState<Mode>("setup");
   const [sessionId, setSessionId] = useState("");
   const [currentQuestion, setCurrentQuestion] = useState("");
   const [questionNum, setQuestionNum] = useState(1);
-  const [currentAnswer, setCurrentAnswer] = useState("");
-  const [turns, setTurns] = useState<TurnResult[]>([]);
+  const [turns, setTurns] = useState<Turn[]>([]);
+  const [liveTranscript, setLiveTranscript] = useState("");
+  const [textFallback, setTextFallback] = useState("");
+  const [showTranscript, setShowTranscript] = useState(false);
+  const [useTextMode, setUseTextMode] = useState(false);
 
-  // Loading flags
-  const [starting, setStarting] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
+  /* Recorder refs */
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef   = useRef<Blob[]>([]);
+  const streamRef        = useRef<MediaStream | null>(null);
+  const transcriptRef    = useRef<HTMLDivElement>(null);
 
-  const TOTAL_QUESTIONS = 8;
+  const TOTAL = 8;
 
-  // ── Start interview ────────────────────────────────────────────────────────
-  const handleStart = async () => {
-    if (!userJobTitle.trim()) {
-      toast({ title: "Job title required", description: "Enter the role you're interviewing for.", variant: "destructive" });
+  /* Auto-scroll transcript */
+  useEffect(() => {
+    if (transcriptRef.current) {
+      transcriptRef.current.scrollTop = transcriptRef.current.scrollHeight;
+    }
+  }, [turns, liveTranscript]);
+
+  /* ── TTS: Sam speaks the question aloud ─────────────────────────────── */
+  const speak = useCallback((text: string, onDone: () => void) => {
+    window.speechSynthesis.cancel();
+    const utter = new SpeechSynthesisUtterance(text);
+    // Pick a natural-sounding voice if available
+    const voices = window.speechSynthesis.getVoices();
+    const preferred = voices.find(v =>
+      v.name.toLowerCase().includes("daniel") ||
+      v.name.toLowerCase().includes("alex") ||
+      v.name.toLowerCase().includes("google uk") ||
+      v.lang === "en-GB"
+    );
+    if (preferred) utter.voice = preferred;
+    utter.rate = 0.95;
+    utter.pitch = 1.0;
+    utter.volume = 1.0;
+    utter.onend = onDone;
+    utter.onerror = onDone;
+    window.speechSynthesis.speak(utter);
+  }, []);
+
+  /* ── Start recording from microphone ────────────────────────────────── */
+  const startRecording = useCallback(async () => {
+    audioChunksRef.current = [];
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      streamRef.current = stream;
+      const recorder = new MediaRecorder(stream, { mimeType: "audio/webm" });
+      mediaRecorderRef.current = recorder;
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) audioChunksRef.current.push(e.data);
+      };
+      recorder.start(200);
+      setMode("listening");
+    } catch {
+      toast({
+        title: "Microphone access denied",
+        description: "Please allow microphone access, or switch to text mode.",
+        variant: "destructive",
+      });
+      setUseTextMode(true);
+    }
+  }, [toast]);
+
+  /* ── Stop recording + transcribe + evaluate ─────────────────────────── */
+  const stopAndEvaluate = useCallback(async () => {
+    const recorder = mediaRecorderRef.current;
+    if (!recorder || recorder.state === "inactive") return;
+    setMode("processing");
+
+    await new Promise<void>((resolve) => {
+      recorder.onstop = () => resolve();
+      recorder.stop();
+    });
+
+    streamRef.current?.getTracks().forEach((t) => t.stop());
+
+    const blob = new Blob(audioChunksRef.current, { type: "audio/webm" });
+
+    let answerText = "";
+    try {
+      const { text } = await transcribeAudio(blob);
+      answerText = text;
+      setLiveTranscript(text);
+    } catch {
+      toast({ title: "Transcription failed", description: "Could not understand audio. Please try again.", variant: "destructive" });
+      setMode("listening");
+      await startRecording();
       return;
     }
-    setStarting(true);
+
+    if (!answerText.trim()) {
+      toast({ title: "No speech detected", description: "Speak closer to the mic or use text mode.", variant: "destructive" });
+      setMode("listening");
+      await startRecording();
+      return;
+    }
+
+    await submitAnswer(answerText);
+  }, [startRecording, toast]); // eslint-disable-line
+
+  /* ── Submit answer + get next question from Sam ─────────────────────── */
+  const submitAnswer = useCallback(async (answerText: string) => {
+    setMode("processing");
+    try {
+      const result = await replyInterview(sessionId, answerText, questionNum);
+
+      const turn: Turn = {
+        question: currentQuestion,
+        answer:   answerText,
+        feedback: result.feedback,
+        score:    result.score,
+      };
+      setTurns((prev) => [...prev, turn]);
+      setLiveTranscript("");
+      setTextFallback("");
+
+      if (result.is_done || questionNum >= TOTAL) {
+        window.speechSynthesis.cancel();
+        setMode("done");
+        return;
+      }
+
+      const nextQ = result.next_question;
+      setCurrentQuestion(nextQ);
+      setQuestionNum((n) => n + 1);
+
+      // Sam speaks the next question, then auto-starts recording
+      setMode("speaking");
+      speak(nextQ, async () => {
+        if (!useTextMode) await startRecording();
+        else setMode("listening");
+      });
+    } catch (e) {
+      toast({ title: "Error", description: String(e), variant: "destructive" });
+      setMode("listening");
+    }
+  }, [sessionId, questionNum, currentQuestion, speak, startRecording, useTextMode, toast]);
+
+  /* ── Start interview ─────────────────────────────────────────────────── */
+  const handleStart = async () => {
+    if (!userJobTitle.trim()) {
+      toast({ title: "Job title required", variant: "destructive" });
+      return;
+    }
+    setMode("processing");
     try {
       const result = await startInterview(userJobTitle, resumeSummary);
       setSessionId(result.session_id);
-      setCurrentQuestion(result.question);
       setQuestionNum(1);
       setTurns([]);
-      setCurrentAnswer("");
-      setPhase("live");
-    } catch (err) {
-      toast({ title: "Couldn't start interview", description: String(err), variant: "destructive" });
-    } finally {
-      setStarting(false);
+      const q = result.question;
+      setCurrentQuestion(q);
+
+      setMode("speaking");
+      speak(q, async () => {
+        if (!useTextMode) await startRecording();
+        else setMode("listening");
+      });
+    } catch (e) {
+      toast({ title: "Could not start interview", description: String(e), variant: "destructive" });
+      setMode("setup");
     }
   };
 
-  // ── Submit answer ──────────────────────────────────────────────────────────
-  const handleSubmit = async () => {
-    if (!currentAnswer.trim()) {
-      toast({ title: "Answer required", description: "Please type your answer before submitting.", variant: "destructive" });
-      return;
-    }
-    setSubmitting(true);
-    try {
-      const result = await replyInterview(sessionId, currentAnswer, questionNum);
-
-      const turn: TurnResult = {
-        question: currentQuestion,
-        answer: currentAnswer,
-        feedback: result.feedback,
-        score: result.score,
-      };
-      setTurns((prev) => [...prev, turn]);
-      setCurrentAnswer("");
-
-      if (result.is_done) {
-        setPhase("done");
-      } else {
-        setCurrentQuestion(result.next_question);
-        setQuestionNum((n) => n + 1);
-      }
-    } catch (err) {
-      toast({ title: "Submission failed", description: String(err), variant: "destructive" });
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
+  /* ── Reset ──────────────────────────────────────────────────────────── */
   const handleReset = () => {
-    setPhase("setup");
+    window.speechSynthesis.cancel();
+    mediaRecorderRef.current?.stop();
+    streamRef.current?.getTracks().forEach((t) => t.stop());
+    setMode("setup");
     setSessionId("");
     setCurrentQuestion("");
-    setCurrentAnswer("");
-    setTurns([]);
     setQuestionNum(1);
+    setTurns([]);
+    setLiveTranscript("");
+    setTextFallback("");
   };
 
-  const avgScore = turns.length > 0
+  /* ── Text-mode submit ───────────────────────────────────────────────── */
+  const handleTextSubmit = async () => {
+    if (!textFallback.trim()) return;
+    setMode("processing");
+    await submitAnswer(textFallback);
+  };
+
+  const avgScore = turns.length
     ? Math.round((turns.reduce((s, t) => s + t.score, 0) / turns.length) * 10) / 10
     : 0;
 
-  // ── Setup phase ────────────────────────────────────────────────────────────
-  if (phase === "setup") {
+  /* ─── SETUP SCREEN ─────────────────────────────────────────────────── */
+  if (mode === "setup") {
     return (
-      <div className="space-y-6 max-w-xl mx-auto py-8" style={{ animation: "staggerFadeIn 0.4s ease-out" }}>
-        <div className="text-center space-y-2">
-          <h3 className="font-syne font-bold text-xl text-foreground">Live Mock Interview with Sam</h3>
+      <div className="flex flex-col items-center gap-8 py-8" style={{ animation: "staggerFadeIn 0.4s ease-out" }}>
+        <style>{OrbStyles}</style>
+        <AnimatedOrb mode="setup" />
+        <div className="text-center space-y-2 max-w-sm">
+          <h3 className="font-syne font-bold text-xl text-foreground">1-on-1 Interview with Sam</h3>
           <p className="text-sm text-muted-foreground">
-            Sam asks you one question at a time, evaluates your answers, and gives instant feedback. 8 questions total.
+            Sam will ask questions out loud. You speak your answers — Groq Whisper transcribes them in real time.
           </p>
         </div>
 
-        <div className="space-y-4">
+        <div className="w-full max-w-sm space-y-4">
           <input
             type="text"
             value={userJobTitle}
@@ -140,211 +386,208 @@ const InterviewCoach = ({
             className="w-full bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-foreground placeholder:text-muted-foreground focus:border-baymax-red focus:outline-none transition-colors"
           />
 
-          <div className="grid grid-cols-3 gap-3 text-center text-xs text-muted-foreground">
-            {[
-              { icon: "🎯", label: "Role-tailored questions" },
-              { icon: "⚡", label: "Instant AI feedback" },
-              { icon: "📊", label: "Score per answer" },
-            ].map(({ icon, label }) => (
-              <div key={label} className="glass-card rounded-lg p-3" style={{ transform: "none" }}>
-                <div className="text-xl mb-1">{icon}</div>
-                <div>{label}</div>
-              </div>
-            ))}
-          </div>
+          {/* Mode toggle */}
+          <label className="flex items-center gap-3 cursor-pointer select-none text-sm text-muted-foreground">
+            <div
+              onClick={() => setUseTextMode((v) => !v)}
+              className={`w-10 h-5 rounded-full transition-colors relative ${useTextMode ? "bg-baymax-red" : "bg-border"}`}
+            >
+              <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${useTextMode ? "translate-x-5" : "translate-x-0.5"}`} />
+            </div>
+            {useTextMode ? "Text mode (type answers)" : "Voice mode (speak answers)"}
+          </label>
 
           <button
             onClick={handleStart}
-            disabled={starting}
-            className="w-full bg-baymax-red text-foreground font-syne font-bold py-3 rounded-lg btn-red-glow transition-all disabled:opacity-50"
+            className="w-full bg-baymax-red text-foreground font-syne font-bold py-3 rounded-lg btn-red-glow transition-all"
           >
-            {starting ? (
-              <span className="flex items-center justify-center gap-2">
-                <span className="w-4 h-4 border-2 border-foreground/30 border-t-foreground rounded-full animate-spin" />
-                Sam is getting ready...
-              </span>
-            ) : (
-              "Start Interview with Sam →"
-            )}
+            {useTextMode ? "Start Interview →" : "🎙️ Start Voice Interview →"}
           </button>
         </div>
       </div>
     );
   }
 
-  // ── Done phase ─────────────────────────────────────────────────────────────
-  if (phase === "done") {
-    const grade =
-      avgScore >= 8 ? "Excellent 🏆"
-      : avgScore >= 6 ? "Good 👍"
-      : "Keep Practicing 💪";
-
+  /* ─── DONE SCREEN ──────────────────────────────────────────────────── */
+  if (mode === "done") {
+    const grade = avgScore >= 8 ? "Excellent 🏆" : avgScore >= 6 ? "Good 👍" : "Keep Practicing 💪";
     return (
-      <div className="space-y-6" style={{ animation: "staggerFadeIn 0.4s ease-out" }}>
-        <div className="text-center space-y-3">
-          <div className="text-6xl">{avgScore >= 8 ? "🏆" : avgScore >= 6 ? "👍" : "💪"}</div>
-          <h3 className="font-syne font-bold text-2xl text-foreground">Interview Complete!</h3>
-          <p className="text-4xl font-syne font-extrabold text-baymax-red">{avgScore}/10</p>
-          <p className="text-muted-foreground">{grade}</p>
+      <div className="flex flex-col items-center gap-6 py-4" style={{ animation: "staggerFadeIn 0.4s ease-out" }}>
+        <style>{OrbStyles}</style>
+        <AnimatedOrb mode="done" />
+        <div className="text-center space-y-1">
+          <p className="font-syne font-extrabold text-4xl text-baymax-red">{avgScore}/10</p>
+          <p className="text-foreground font-semibold">{grade}</p>
         </div>
 
         {/* Score breakdown */}
-        <div className="glass-card rounded-xl p-5 space-y-3" style={{ transform: "none" }}>
-          <p className="text-sm text-muted-foreground font-semibold">Score Breakdown</p>
-          {turns.map((t, i) => (
-            <div key={i} className="flex items-start gap-3">
-              <span className="text-xs text-muted-foreground font-mono-label pt-0.5 shrink-0">Q{i + 1}</span>
-              <div className="flex-1 min-w-0">
-                <p className="text-xs text-foreground truncate">{t.question}</p>
-                <p className="text-xs text-muted-foreground mt-0.5 line-clamp-1">{t.feedback}</p>
+        <div className="w-full max-w-lg glass-card rounded-xl p-4 space-y-3 max-h-60 overflow-y-auto" style={{ transform: "none" }}>
+          {turns.map((t, i) => {
+            const c = t.score >= 8 ? "#10b981" : t.score >= 6 ? "#f59e0b" : "#ef4444";
+            return (
+              <div key={i} className="border-l-2 pl-3 space-y-0.5" style={{ borderColor: c }}>
+                <div className="flex justify-between items-center">
+                  <span className="text-xs text-muted-foreground">Q{i + 1}</span>
+                  <span className="text-xs font-bold" style={{ color: c }}>{t.score}/10</span>
+                </div>
+                <p className="text-xs text-foreground line-clamp-1">{t.question}</p>
+                <p className="text-xs text-muted-foreground line-clamp-1">{t.feedback}</p>
               </div>
-              <ScoreBadge score={t.score} />
-            </div>
-          ))}
+            );
+          })}
         </div>
 
-        <div className="flex flex-wrap gap-3 justify-center">
-          <button
-            onClick={handleReset}
-            className="border border-baymax-red text-baymax-red font-syne font-bold px-6 py-3 rounded-lg hover:bg-baymax-red/10 transition-all"
-          >
+        <div className="flex gap-3">
+          <button onClick={handleReset}
+            className="border border-baymax-red text-baymax-red font-syne font-bold px-6 py-3 rounded-lg hover:bg-baymax-red/10 transition-all">
             Try Again
           </button>
-          <button
-            onClick={() => onSwitchTab(2)}
-            className="bg-baymax-red text-foreground font-syne font-bold px-8 py-3 rounded-lg btn-red-glow transition-all"
-          >
-            Find Jobs for This Role →
+          <button onClick={() => onSwitchTab(2)}
+            className="bg-baymax-red text-foreground font-syne font-bold px-6 py-3 rounded-lg btn-red-glow transition-all">
+            Find Jobs →
           </button>
         </div>
       </div>
     );
   }
 
-  // ── Live interview phase ───────────────────────────────────────────────────
+  /* ─── LIVE INTERVIEW SCREEN ─────────────────────────────────────────── */
   return (
-    <div className="space-y-5" style={{ animation: "staggerFadeIn 0.3s ease-out" }}>
+    <div className="flex flex-col items-center gap-5" style={{ animation: "staggerFadeIn 0.3s ease-out" }}>
+      <style>{OrbStyles}</style>
+
       {/* Header */}
-      <div className="flex items-center justify-between gap-3 flex-wrap">
-        <div>
-          <span className="text-sm text-muted-foreground">Interviewing for: </span>
-          <span className="text-sm text-foreground font-semibold">{userJobTitle}</span>
+      <div className="w-full flex items-center justify-between">
+        <div className="flex gap-1 items-center">
+          {Array.from({ length: TOTAL }).map((_, i) => (
+            <div key={i} className={`h-1.5 rounded-full transition-all ${
+              i < turns.length ? "bg-baymax-red w-5" : i === turns.length ? "bg-baymax-red/50 w-3" : "bg-border w-3"
+            }`} />
+          ))}
+          <span className="text-xs text-muted-foreground ml-2 font-mono-label">
+            {questionNum}/{TOTAL}
+          </span>
         </div>
         <div className="flex items-center gap-2">
-          {/* Progress dots */}
-          <div className="flex gap-1">
-            {Array.from({ length: TOTAL_QUESTIONS }).map((_, i) => (
-              <div
-                key={i}
-                className={`w-2 h-2 rounded-full transition-all ${
-                  i < turns.length
-                    ? "bg-baymax-red"
-                    : i === turns.length
-                    ? "bg-baymax-red/40 scale-125"
-                    : "bg-border"
-                }`}
-              />
-            ))}
-          </div>
-          <span className="text-xs text-muted-foreground font-mono-label">
-            {questionNum}/{TOTAL_QUESTIONS}
-          </span>
-          <button
-            onClick={() => setPhase("done")}
-            title="End interview early"
-            className="p-1.5 rounded border border-baymax-red/30 text-muted-foreground hover:text-foreground hover:border-baymax-red transition-all"
-          >
+          {avgScore > 0 && (
+            <span className="text-xs text-muted-foreground">avg <span className="text-foreground font-bold">{avgScore}/10</span></span>
+          )}
+          <button onClick={handleReset}
+            className="p-1.5 rounded border border-border text-muted-foreground hover:text-baymax-red hover:border-baymax-red transition-all"
+            title="End interview">
             <Square size={12} />
           </button>
         </div>
       </div>
 
-      {/* Live running score */}
-      {turns.length > 0 && (
-        <div className="flex items-center gap-3 text-sm">
-          <span className="text-muted-foreground">Running avg:</span>
-          <ScoreBadge score={avgScore} />
-          <div className="flex gap-1">
-            {turns.map((t, i) => (
-              <div
-                key={i}
-                className={`w-1.5 h-5 rounded-sm ${
-                  t.score >= 8 ? "bg-green-400" : t.score >= 6 ? "bg-yellow-400" : "bg-baymax-red"
-                }`}
-                title={`Q${i + 1}: ${t.score}/10`}
-              />
-            ))}
-          </div>
+      {/* Orb */}
+      <AnimatedOrb mode={mode} />
+
+      {/* Current question */}
+      <div className="w-full rounded-xl bg-card border border-border/60 p-4 text-center">
+        <p className="text-foreground leading-relaxed text-sm">{currentQuestion}</p>
+      </div>
+
+      {/* Status bar */}
+      <div className="flex items-center gap-3 h-8">
+        {mode === "listening" && (
+          <>
+            <div className="flex items-end gap-0.5 h-6">
+              {[0,1,2,3,4,5,6].map((i) => <WaveBar key={i} delay={i} />)}
+            </div>
+            <span className="text-sm text-emerald-400 font-semibold">Listening...</span>
+          </>
+        )}
+        {mode === "speaking" && (
+          <>
+            <Volume2 size={16} className="text-baymax-red animate-pulse" />
+            <span className="text-sm text-baymax-red-light font-semibold">Sam is speaking...</span>
+          </>
+        )}
+        {mode === "processing" && (
+          <>
+            <span className="w-3.5 h-3.5 rounded-full border-2 border-yellow-400/40 border-t-yellow-400 animate-spin" />
+            <span className="text-sm text-yellow-400 font-semibold">Processing...</span>
+          </>
+        )}
+      </div>
+
+      {/* Live transcript bubble */}
+      {liveTranscript && mode !== "processing" && (
+        <div className="w-full rounded-lg bg-secondary border border-border px-4 py-2 text-sm text-muted-foreground italic">
+          " {liveTranscript} "
         </div>
       )}
 
-      {/* Sam's question bubble */}
-      <div className="rounded-xl border border-border/60 bg-card p-5 space-y-1">
-        <div className="flex items-center gap-2 mb-3">
-          <div className="w-7 h-7 rounded-full bg-foreground flex items-center justify-center shrink-0">
-            <svg viewBox="0 0 200 220" width="16" height="18">
-              <ellipse cx="100" cy="145" rx="65" ry="70" fill="#111" />
-              <circle cx="100" cy="65" r="40" fill="#111" />
-              <ellipse cx="88" cy="58" rx="4" ry="5" fill="white" />
-              <ellipse cx="112" cy="58" rx="4" ry="5" fill="white" />
-            </svg>
+      {/* Controls */}
+      <div className="w-full space-y-3">
+        {/* Voice mode */}
+        {!useTextMode && mode === "listening" && (
+          <button
+            onClick={stopAndEvaluate}
+            className="w-full flex items-center justify-center gap-2 bg-emerald-500 text-white font-syne font-bold py-3 rounded-lg transition-all hover:bg-emerald-400"
+          >
+            <MicOff size={16} />
+            Done Speaking — Submit Answer
+          </button>
+        )}
+
+        {/* Text fallback always visible */}
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <label className="text-xs text-muted-foreground">
+              {useTextMode ? "Type your answer:" : "Or type instead:"}
+            </label>
+            {!useTextMode && (
+              <button onClick={() => setUseTextMode(true)} className="text-xs text-muted-foreground hover:text-foreground transition-colors">
+                Switch to text mode
+              </button>
+            )}
           </div>
-          <span className="text-xs text-muted-foreground font-semibold">SAM ASKS</span>
+          <div className="flex gap-2">
+            <textarea
+              value={textFallback}
+              onChange={(e) => setTextFallback(e.target.value)}
+              placeholder="Type your answer here..."
+              className="flex-1 bg-secondary border border-border rounded-lg px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:border-baymax-red focus:outline-none transition-colors resize-none h-16"
+              disabled={mode === "processing" || mode === "speaking"}
+            />
+            <button
+              onClick={handleTextSubmit}
+              disabled={!textFallback.trim() || mode === "processing" || mode === "speaking"}
+              className="bg-baymax-red text-foreground font-syne font-bold px-4 rounded-lg btn-red-glow transition-all disabled:opacity-40 text-sm"
+            >
+              Send →
+            </button>
+          </div>
         </div>
-        <p className="text-foreground text-base leading-relaxed">{currentQuestion}</p>
       </div>
 
-      {/* Previous turn feedback (most recent) */}
-      {turns.length > 0 && (() => {
-        const last = turns[turns.length - 1];
-        const color =
-          last.score >= 8 ? "#10b981" : last.score >= 6 ? "#f59e0b" : "#ef4444";
-        return (
-          <div
-            className="rounded-lg p-4 space-y-1 text-sm"
-            style={{
-              borderLeft: `3px solid ${color}`,
-              background: "rgba(255,255,255,0.02)",
-            }}
-          >
-            <div className="flex items-center gap-2">
-              <CheckCircle size={13} style={{ color }} />
-              <span className="font-semibold" style={{ color }}>
-                Q{turns.length} Feedback — {last.score}/10
-              </span>
-            </div>
-            <p className="text-muted-foreground">{last.feedback}</p>
+      {/* Collapsible transcript */}
+      <div className="w-full">
+        <button
+          onClick={() => setShowTranscript((v) => !v)}
+          className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
+        >
+          <ChevronDown size={12} className={`transition-transform ${showTranscript ? "rotate-180" : ""}`} />
+          {showTranscript ? "Hide" : "Show"} transcript ({turns.length} exchanges)
+        </button>
+        {showTranscript && (
+          <div ref={transcriptRef} className="mt-2 max-h-48 overflow-y-auto space-y-3 pr-1">
+            {turns.map((t, i) => {
+              const c = t.score >= 8 ? "#10b981" : t.score >= 6 ? "#f59e0b" : "#ef4444";
+              return (
+                <div key={i} className="space-y-1.5 border-l-2 pl-3" style={{ borderColor: c }}>
+                  <p className="text-xs text-muted-foreground"><span className="text-foreground font-semibold">Sam:</span> {t.question}</p>
+                  <p className="text-xs text-muted-foreground"><span className="text-foreground font-semibold">You:</span> {t.answer}</p>
+                  <p className="text-xs" style={{ color: c }}>
+                    {t.score}/10 — {t.feedback}
+                  </p>
+                </div>
+              );
+            })}
           </div>
-        );
-      })()}
-
-      {/* Answer input */}
-      <div className="space-y-2">
-        <textarea
-          value={currentAnswer}
-          onChange={(e) => setCurrentAnswer(e.target.value)}
-          placeholder="Type your answer here..."
-          className="w-full bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-foreground placeholder:text-muted-foreground focus:border-baymax-red focus:outline-none transition-colors resize-none h-28"
-        />
-        <div className="flex justify-between items-center">
-          <span className="text-xs text-muted-foreground font-mono-label">
-            {currentAnswer.split(/\s+/).filter(Boolean).length} words
-          </span>
-          <button
-            onClick={handleSubmit}
-            disabled={submitting || !currentAnswer.trim()}
-            className="bg-baymax-red text-foreground font-syne font-bold px-6 py-2.5 rounded-lg btn-red-glow transition-all text-sm disabled:opacity-50"
-          >
-            {submitting ? (
-              <span className="flex items-center gap-2">
-                <span className="w-3.5 h-3.5 border-2 border-foreground/30 border-t-foreground rounded-full animate-spin" />
-                Sam is thinking...
-              </span>
-            ) : (
-              `Submit Answer →`
-            )}
-          </button>
-        </div>
+        )}
       </div>
     </div>
   );
