@@ -11,7 +11,17 @@ export default defineConfig(({ mode }) => ({
     hmr: {
       overlay: false,
     },
+    proxy: {
+      "/resume": { target: "http://localhost:8000", changeOrigin: true },
+      "/jobs":   { target: "http://localhost:8000", changeOrigin: true },
+      "/interview": { target: "http://localhost:8000", changeOrigin: true },
+      "/roadmap": { target: "http://localhost:8000", changeOrigin: true },
+      "/extract-resume": { target: "http://localhost:8000", changeOrigin: true },
+      "/analyze": { target: "http://localhost:8000", changeOrigin: true },
+      "/health":  { target: "http://localhost:8000", changeOrigin: true },
+    },
   },
+
   plugins: [react(), mode === "development" && componentTagger()].filter(Boolean),
   resolve: {
     alias: {

@@ -67,7 +67,7 @@ interface ResumeState {
 
 const uid = () => Math.random().toString(36).slice(2, 9);
 
-const API_BASE = "http://localhost:8000";
+const API_BASE = "http://127.0.0.1:8000";
 
 async function improveSection(text: string, context = ""): Promise<string> {
   const res = await fetch(`${API_BASE}/resume/improve`, {

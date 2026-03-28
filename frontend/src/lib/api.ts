@@ -3,9 +3,9 @@
  * Centralizes all API calls to the Baymax backend
  */
 
-export const API_BASE_URL = import.meta.env.DEV
-  ? "http://localhost:8000"
-  : window.location.origin;
+export const API_BASE_URL = "http://127.0.0.1:8000";
+
+
 
 export interface PipelineResponse {
   resume_analysis: string;
