@@ -8,6 +8,8 @@ interface Props {
   onSwitchTab: (tab: number) => void;
   jobTitle?: string;
   resumeSummary?: string;
+  userId?: string;
+  onInterviewDone?: (avgScore: number, weakAreas: string[]) => void;
 }
 
 type Mode = "setup" | "speaking" | "listening" | "processing" | "done";
@@ -140,7 +142,7 @@ const SoundBars = ({ active }: { active: boolean }) => (
 );
 
 /* ─── Main Component ────────────────────────────────────────────────────── */
-const InterviewCoach = ({ onSwitchTab, jobTitle = "", resumeSummary = "" }: Props) => {
+const InterviewCoach = ({ onSwitchTab, jobTitle = "", resumeSummary = "", userId = "default", onInterviewDone }: Props) => {
   const { toast } = useToast();
 
   const [userJobTitle, setUserJobTitle]   = useState(jobTitle);
@@ -176,17 +178,28 @@ const InterviewCoach = ({ onSwitchTab, jobTitle = "", resumeSummary = "" }: Prop
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
   }, [turns, interimText, finalText]);
 
-  /* ── TTS: Sam speaks ─────────────────────────────────────────────────── */
+  /* ── TTS: Sam speaks — natural voice ─────────────────────────────────── */
   const speak = useCallback((text: string, onDone: () => void) => {
     window.speechSynthesis.cancel();
     const utter = new SpeechSynthesisUtterance(text);
     const voices = window.speechSynthesis.getVoices();
-    const pick = voices.find(v =>
-      v.name.includes("Daniel") || v.name.includes("Alex") ||
-      v.name.toLowerCase().includes("uk english") || v.lang === "en-GB"
-    );
+
+    // Priority order: most natural first
+    const pick =
+      voices.find(v => v.name === "Google US English") ||
+      voices.find(v => v.name === "Google UK English Male") ||
+      voices.find(v => v.name.includes("Microsoft David")) ||
+      voices.find(v => v.name.includes("Samantha")) ||
+      voices.find(v => v.name.includes("Daniel") && v.lang === "en-GB") ||
+      voices.find(v => v.name.includes("Alex") && v.lang === "en-US") ||
+      voices.find(v => v.name.includes("Aaron")) ||
+      voices.find(v => v.lang === "en-US" && !v.name.includes("Google")) ||
+      voices.find(v => v.lang.startsWith("en"));
+
     if (pick) utter.voice = pick;
-    utter.rate = 0.92; utter.pitch = 1.0; utter.volume = 1.0;
+    utter.rate   = 0.90;   // slightly slower = clearer
+    utter.pitch  = 0.95;   // slightly lower = more confident
+    utter.volume = 1.0;
     utter.onend  = onDone;
     utter.onerror = onDone;
     window.speechSynthesis.speak(utter);
@@ -318,6 +331,17 @@ const InterviewCoach = ({ onSwitchTab, jobTitle = "", resumeSummary = "" }: Prop
       if (result.is_done || questionNum >= 8) {
         window.speechSynthesis.cancel();
         setMode("done");
+        // Compute weak areas (score < 6) and save
+        const allTurns = [...turns, { question: currentQuestion, answer: answerText, feedback: result.feedback, score: result.score }];
+        const weakTurns = allTurns.filter((t) => t.score < 6);
+        const weakAreas = weakTurns.map((t) => t.question.split(" ").slice(0, 4).join(" "));
+        const avg = allTurns.reduce((s, t) => s + t.score, 0) / allTurns.length;
+        onInterviewDone?.(Math.round(avg * 10) / 10, weakAreas);
+        // Fire-and-forget backend save
+        try {
+          const { saveInterviewResult } = await import("@/lib/api");
+          await saveInterviewResult(userId, Math.round(avg * 10) / 10, weakAreas.join(", "));
+        } catch { /* non-fatal */ }
         return;
       }
 
@@ -447,7 +471,7 @@ const InterviewCoach = ({ onSwitchTab, jobTitle = "", resumeSummary = "" }: Prop
             className="border border-baymax-red text-baymax-red font-syne font-bold px-6 py-3 rounded-lg hover:bg-baymax-red/10 transition-all">
             Try Again
           </button>
-          <button onClick={() => onSwitchTab(2)}
+          <button onClick={() => onSwitchTab(3)}
             className="bg-baymax-red text-foreground font-syne font-bold px-6 py-3 rounded-lg btn-red-glow transition-all">
             Find Jobs →
           </button>

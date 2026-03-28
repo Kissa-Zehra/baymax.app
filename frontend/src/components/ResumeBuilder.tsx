@@ -16,9 +16,10 @@ import { useState, useCallback } from "react";
 import {
   Plus, Trash2, Download, Sparkles, RefreshCw, Loader2,
   ChevronDown, ChevronUp, User, Briefcase, GraduationCap,
-  Code2, Layers,
+  Code2, Layers, Upload, FileText, ArrowRight,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { extractResume } from "@/lib/api";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -67,7 +68,8 @@ interface ResumeState {
 
 const uid = () => Math.random().toString(36).slice(2, 9);
 
-const API_BASE = "http://127.0.0.1:8000";
+const API_BASE = "";  // relative — Vite proxy handles it
+
 
 async function improveSection(text: string, context = ""): Promise<string> {
   const res = await fetch(`${API_BASE}/resume/improve`, {
@@ -282,10 +284,135 @@ a{color:#e53e3e;text-decoration:none}</style></head>
 interface Props {
   jobTitle?: string;
   onResumeTextChange?: (text: string) => void;
+  onProceedToAnalysis?: () => void;
 }
 
-const ResumeBuilder = ({ jobTitle = "", onResumeTextChange }: Props) => {
+/**
+ * Parse raw resume text back into a partial ResumeState.
+ * Falls back to raw text mode if the structure is too unrecognisable.
+ */
+function textToResumeState(text: string): { state: ResumeState; isRaw: boolean } {
+  const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
+
+  const state: ResumeState = {
+    profile: { name: "", email: "", phone: "", location: "", url: "", summary: "" },
+    workExperiences: [],
+    projects: [],
+    educations: [],
+    skills: { descriptions: [] },
+  };
+
+  // Email pattern
+  const emailMatch = text.match(/[\w.+-]+@[\w-]+\.[a-zA-Z]{2,}/);
+  if (emailMatch) state.profile.email = emailMatch[0];
+
+  // Phone pattern (Pakistani + international)
+  const phoneMatch = text.match(/(\+92|0)[\s-]?\d{3}[\s-]?\d{7}|\+?\d[\s-]?\(?\d{3}\)?[\s-]?\d{3}[\s-]?\d{4}/);
+  if (phoneMatch) state.profile.phone = phoneMatch[0];
+
+  // LinkedIn / URL
+  const urlMatch = text.match(/https?:\/\/[^\s]+|linkedin\.com\/in\/[^\s]+|github\.com\/[^\s]+/);
+  if (urlMatch) state.profile.url = urlMatch[0];
+
+  // Name = first non-empty line that isn't email/phone/url
+  for (const line of lines.slice(0, 5)) {
+    if (!line.match(/@|linkedin|github|http|\+92|\+1|\d{7}/i) && line.length < 60 && line.split(" ").length <= 5) {
+      state.profile.name = line;
+      break;
+    }
+  }
+
+  // Section detection
+  const sectionMap: Record<string, string> = {};
+  let currentSection = "intro";
+  let buffer: string[] = [];
+  const flushBuffer = () => { if (buffer.length) sectionMap[currentSection] = buffer.join("\n"); buffer = []; };
+
+  const SECTION_RE = /^(SUMMARY|OBJECTIVE|EXPERIENCE|WORK|EDUCATION|SKILLS|PROJECTS|CERTIFICATIONS|AWARDS)/i;
+
+  for (const line of lines) {
+    if (SECTION_RE.test(line) && line.length < 60) {
+      flushBuffer();
+      currentSection = line.toLowerCase().replace(/[^a-z]/g, "");
+    } else {
+      buffer.push(line);
+    }
+  }
+  flushBuffer();
+
+  // Summary
+  const summaryText = sectionMap["summary"] || sectionMap["objective"] || "";
+  if (summaryText) state.profile.summary = summaryText.slice(0, 600);
+
+  // Skills
+  const skillsRaw = sectionMap["skills"] || "";
+  if (skillsRaw) {
+    const skillLines = skillsRaw.split("\n").filter(Boolean);
+    state.skills.descriptions = skillLines.slice(0, 8);
+  }
+
+  // Work Experience — crude split by company/date pattern
+  const expRaw = sectionMap["experience"] || sectionMap["work"] || sectionMap["workexperience"] || "";
+  if (expRaw) {
+    const expLines = expRaw.split("\n").filter(Boolean);
+    let cur: WorkExp | null = null;
+    for (const line of expLines) {
+      const isHeader = line.match(/(\d{4}|Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec|Present)/i) && line.length < 120;
+      if (isHeader && expLines.indexOf(line) % 4 === 0) {
+        if (cur) state.workExperiences.push(cur);
+        cur = { id: uid(), company: line, jobTitle: "", date: "", descriptions: [] };
+      } else if (cur) {
+        if (!cur.jobTitle && line.length < 80) cur.jobTitle = line;
+        else cur.descriptions.push(line.replace(/^[-•*]\s*/, ""));
+      }
+    }
+    if (cur) state.workExperiences.push(cur);
+  }
+  if (state.workExperiences.length === 0) state.workExperiences.push(defaultExp());
+
+  // Education
+  const eduRaw = sectionMap["education"] || "";
+  if (eduRaw) {
+    const eduLines = eduRaw.split("\n").filter(Boolean);
+    if (eduLines.length > 0) {
+      const edu = defaultEdu();
+      edu.school = eduLines[0] || "";
+      edu.degree = eduLines[1] || "";
+      edu.date   = eduLines[2]?.match(/\d{4}/) ? eduLines[2] : "";
+      edu.gpa    = (eduLines.find((l) => l.match(/gpa|cgpa/i)) || "").replace(/.*gpa[:\s]*/i, "").slice(0, 10);
+      state.educations.push(edu);
+    }
+  }
+  if (state.educations.length === 0) state.educations.push(defaultEdu());
+
+  // Projects
+  const projRaw = sectionMap["projects"] || "";
+  if (projRaw) {
+    const projLines = projRaw.split("\n").filter(Boolean);
+    let curP: Project | null = null;
+    for (const line of projLines) {
+      if (!curP || (line.length < 80 && !line.startsWith("•") && !line.startsWith("-"))) {
+        if (curP) state.projects.push(curP);
+        curP = { id: uid(), project: line, date: "", descriptions: [] };
+      } else {
+        curP.descriptions.push(line.replace(/^[-•*]\s*/, ""));
+      }
+    }
+    if (curP) state.projects.push(curP);
+  }
+  if (state.projects.length === 0) state.projects.push(defaultProj());
+
+  // Check if we got meaningful data
+  const meaningful = !!(state.profile.name || state.profile.email || state.workExperiences[0]?.company);
+  return { state, isRaw: !meaningful };
+}
+
+const ResumeBuilder = ({ jobTitle = "", onResumeTextChange, onProceedToAnalysis }: Props) => {
   const { toast } = useToast();
+  const [mode, setMode] = useState<"build" | "upload">("build");
+  const [uploadLoading, setUploadLoading] = useState(false);
+  const [rawResumeText, setRawResumeText] = useState("");
+  const [isRawMode, setIsRawMode] = useState(false);
   const [data, setData] = useState<ResumeState>(DEFAULT);
   const [aiLoading, setAiLoading] = useState<Record<string, boolean>>({});
   const [openSections, setOpenSections] = useState({ profile: true, exp: true, edu: false, skills: false, proj: false });
@@ -302,6 +429,33 @@ const ResumeBuilder = ({ jobTitle = "", onResumeTextChange }: Props) => {
   }, [onResumeTextChange]);
 
   const setLoading = (k: string, v: boolean) => setAiLoading((p) => ({ ...p, [k]: v }));
+
+  // ── PDF Upload & Parse ──────────────────────────────────────────────────────
+
+  const handlePdfUpload = async (file: File) => {
+    setUploadLoading(true);
+    try {
+      const result = await extractResume(file);
+      const { state, isRaw } = textToResumeState(result.extracted_text);
+      if (isRaw) {
+        // fallback: give user rope to edit the raw text
+        setRawResumeText(result.extracted_text);
+        setIsRawMode(true);
+        onResumeTextChange?.(result.extracted_text);
+        toast({ title: "📄 Parsed (raw mode)", description: "Format unclear — editing raw text." });
+      } else {
+        setData(state);
+        onResumeTextChange?.(resumeStateToText(state));
+        setIsRawMode(false);
+        toast({ title: "✅ Resume parsed!", description: "Review and edit any fields below." });
+      }
+      setMode("build");
+    } catch (e) {
+      toast({ title: "Upload failed", description: String(e), variant: "destructive" });
+    } finally {
+      setUploadLoading(false);
+    }
+  };
 
   // ── AI actions ───────────────────────────────────────────────────────────────
 
@@ -368,12 +522,110 @@ const ResumeBuilder = ({ jobTitle = "", onResumeTextChange }: Props) => {
 
   const previewBody = buildHTML(data).replace(/<!DOCTYPE[\s\S]*?<body[^>]*>/, "").replace(/<\/body>[\s\S]*$/, "");
 
+  // ── Upload Mode UI ──────────────────────────────────────────────────────────
+
+  if (mode === "upload") {
+    return (
+      <div className="space-y-4">
+        {/* Mode toggle */}
+        <div className="flex gap-2 mb-4">
+          <button onClick={() => setMode("build")} className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold bg-secondary border border-border text-muted-foreground hover:border-baymax-red transition-colors">
+            <FileText size={14} /> Build from scratch
+          </button>
+          <button className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold bg-baymax-red text-white">
+            <Upload size={14} /> Upload &amp; Edit
+          </button>
+        </div>
+
+        <div
+          className="rounded-xl flex flex-col items-center justify-center gap-4 py-16 cursor-pointer transition-all"
+          style={{ border: "2px dashed #3a3a3a", background: "#0a0a0a" }}
+          onDragOver={(e) => e.preventDefault()}
+          onDrop={(e) => {
+            e.preventDefault();
+            const f = e.dataTransfer.files[0];
+            if (f?.name.endsWith(".pdf")) handlePdfUpload(f);
+          }}
+        >
+          {uploadLoading ? (
+            <>
+              <Loader2 size={36} className="animate-spin text-baymax-red" />
+              <p className="text-sm text-gray-400">Parsing your resume…</p>
+            </>
+          ) : (
+            <>
+              <Upload size={36} className="text-gray-500" />
+              <p className="text-sm font-semibold text-gray-300">Drag & drop your PDF here</p>
+              <p className="text-xs text-gray-600">or</p>
+              <label className="px-5 py-2.5 rounded-lg text-sm font-bold text-white cursor-pointer transition-all"
+                style={{ background: "linear-gradient(135deg,#e53e3e,#c53030)", boxShadow: "0 4px 20px rgba(229,62,62,0.35)" }}>
+                Browse PDF
+                <input type="file" accept=".pdf" className="hidden" onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) handlePdfUpload(f);
+                }} />
+              </label>
+              <p className="text-xs text-gray-600">We'll parse it and pre-fill the editor</p>
+            </>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div
-      className="grid md:grid-cols-[440px_1fr] gap-0 rounded-xl overflow-hidden border border-[#1f1f1f]"
-      style={{ height: "680px" }}
-    >
-      {/* ── Editor Panel ──────────────────────────────────────────────── */}
+    <div className="space-y-4">
+      {/* ── Mode Toggle ── */}
+      <div className="flex gap-2">
+        <button
+          onClick={() => setMode("build")}
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold border transition-colors ${
+            mode === "build"
+              ? "bg-baymax-red text-white border-baymax-red"
+              : "bg-secondary border-border text-muted-foreground hover:border-baymax-red"
+          }`}
+        >
+          <FileText size={14} /> Build from Scratch
+        </button>
+        <button
+          onClick={() => setMode("upload")}
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold border transition-colors ${
+            mode !== "build"
+              ? "bg-baymax-red text-white border-baymax-red"
+              : "bg-secondary border-border text-muted-foreground hover:border-baymax-red"
+          }`}
+        >
+          <Upload size={14} /> Upload &amp; Edit
+        </button>
+      </div>
+
+      {/* Raw text fallback (after PDF parse fails structure detection) */}
+      {isRawMode && (
+        <div className="rounded-xl p-4" style={{ background: "#111", border: "1px solid #92400e" }}>
+          <p className="text-xs font-bold text-amber-400 mb-2">⚠️ Raw text mode — PDF structure was unclear. Edit directly:</p>
+          <textarea
+            className="w-full bg-[#0a0a0a] border border-[#2a2a2a] rounded-lg px-3 py-2 text-sm text-gray-200 focus:border-red-500/60 focus:outline-none resize-none"
+            rows={12}
+            value={rawResumeText}
+            onChange={(e) => { setRawResumeText(e.target.value); onResumeTextChange?.(e.target.value); }}
+            placeholder="Paste or edit your resume here…"
+          />
+          <button
+            className="mt-2 text-xs text-baymax-red hover:underline"
+            onClick={() => { const { state } = textToResumeState(rawResumeText); setData(state); setIsRawMode(false); onResumeTextChange?.(resumeStateToText(state)); }}
+          >
+            Try structured mode →
+          </button>
+        </div>
+      )}
+
+      {/* Editor + Preview grid — hidden in raw mode */}
+      {!isRawMode && (
+      <div
+        className="grid md:grid-cols-[440px_1fr] gap-0 rounded-xl overflow-hidden border border-[#1f1f1f]"
+        style={{ height: "680px" }}
+      >
+        {/* ── Editor Panel ──────────────────────────────────────────────── */}
       <div className="overflow-y-auto flex flex-col" style={{ background: "#0f0f0f", borderRight: "1px solid #1f1f1f" }}>
 
         {/* Sticky header */}
@@ -553,8 +805,25 @@ const ResumeBuilder = ({ jobTitle = "", onResumeTextChange }: Props) => {
           />
         </div>
       </div>
+      </div>
+      )} {/* end !isRawMode */}
+
+      {/* ── Proceed to Analysis CTA ── */}
+      {onProceedToAnalysis && (
+        <button
+          onClick={onProceedToAnalysis}
+          className="w-full flex items-center justify-center gap-2 py-3.5 rounded-xl font-bold text-white text-sm mt-2"
+          style={{
+            background: "linear-gradient(135deg, #2563eb, #1d4ed8)",
+            boxShadow: "0 4px 20px rgba(37,99,235,0.35)",
+          }}
+        >
+          Proceed to Analysis <ArrowRight size={16} />
+        </button>
+      )}
     </div>
   );
 };
 
 export default ResumeBuilder;
+

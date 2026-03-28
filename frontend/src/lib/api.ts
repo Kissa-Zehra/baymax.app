@@ -1,11 +1,12 @@
 /**
  * api.ts - Backend API client utilities
  * Centralizes all API calls to the Baymax backend
+ *
+ * In development : VITE_API_URL is empty → Vite proxy forwards to :8000
+ * In production  : VITE_API_URL = https://baymax-backend.onrender.com
  */
 
-export const API_BASE_URL = "http://127.0.0.1:8000";
-
-
+export const API_BASE_URL = import.meta.env.VITE_API_URL ?? "";
 
 export interface PipelineResponse {
   resume_analysis: string;
@@ -371,6 +372,171 @@ export async function generateResumeSection(
     throw new Error(error.detail || "Section generation failed");
   }
 
+  return response.json();
+}
+
+// ── New session-aware API helpers ─────────────────────────────────────────────
+
+export interface Certification {
+  name: string;
+  issuer: string;
+  platform: string;
+  url: string;
+  duration: string;
+  cost: string;
+  addresses: string;
+  why_relevant: string;
+}
+
+/**
+ * Search jobs — sends the full structured skills list for personalised results.
+ */
+export async function searchJobsWithSkills(
+  jobTitle: string,
+  skillsSummary: string,
+  skillsList: string[],
+  userId: string,
+): Promise<{ jobs: string }> {
+  const formData = new FormData();
+  formData.append("job_title", jobTitle);
+  formData.append("skills_summary", skillsSummary);
+  formData.append("skills_list", skillsList.join(","));
+  formData.append("user_id", userId);
+
+  const response = await fetch(`${API_BASE_URL}/jobs`, {
+    method: "POST",
+    body: formData,
+  });
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.detail || "Job search failed");
+  }
+  return response.json();
+}
+
+/**
+ * Generate a hyper-personalised roadmap using all pipeline context.
+ */
+export async function generateRoadmapFull(
+  jobTitle: string,
+  skillsGap: string,
+  currentSkills: string,
+  interviewWeakAreas: string,
+): Promise<{ roadmap: string }> {
+  const formData = new FormData();
+  formData.append("job_title", jobTitle);
+  formData.append("skills_gap", skillsGap);
+  formData.append("current_skills", currentSkills);
+  formData.append("interview_weak_areas", interviewWeakAreas);
+
+  const response = await fetch(`${API_BASE_URL}/roadmap`, {
+    method: "POST",
+    body: formData,
+  });
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.detail || "Roadmap generation failed");
+  }
+  return response.json();
+}
+
+/**
+ * Persist the user's full resume + analysis to Mem0 after analysis completes.
+ */
+export async function saveUserProfile(
+  userId: string,
+  resumeText: string,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  analysisResult: Record<string, any>,
+  jobTitle: string,
+): Promise<{ success: boolean }> {
+  const response = await fetch(`${API_BASE_URL}/resume/save-profile`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      user_id: userId,
+      resume_text: resumeText,
+      analysis_result: analysisResult,
+      job_title: jobTitle,
+    }),
+  });
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.detail || "Failed to save profile");
+  }
+  return response.json();
+}
+
+/**
+ * Persist mock interview results for the Roadmap agent.
+ */
+export async function saveInterviewResult(
+  userId: string,
+  avgScore: number,
+  weakAreas: string,
+): Promise<{ success: boolean }> {
+  const response = await fetch(`${API_BASE_URL}/interview/save-result`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ user_id: userId, avg_score: avgScore, weak_areas: weakAreas }),
+  });
+  if (!response.ok) return { success: false };
+  return response.json();
+}
+
+/**
+ * Get AI-recommended certifications based on the user's specific skill gaps.
+ */
+export async function getCertifications(
+  jobTitle: string,
+  skillsGap: string[],
+  currentSkills: string[],
+): Promise<{ certifications: Certification[] }> {
+  const response = await fetch(`${API_BASE_URL}/roadmap/certifications`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ job_title: jobTitle, skills_gap: skillsGap, current_skills: currentSkills }),
+  });
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.detail || "Certifications request failed");
+  }
+  return response.json();
+}
+
+// ── Rahul Interactive Chat ────────────────────────────────────────────────────
+
+export interface RahulChatResponse {
+  reply: string;
+  show_aid: boolean;
+  resources: Array<{ title: string; url: string; platform: string; duration: string; free: boolean; financial_aid?: boolean }>;
+  aid_course: string;
+  aid_template?: string;
+}
+
+/**
+ * Send a follow-up message to Rahul (career mentor) and get a response.
+ */
+export async function chatWithRahul(
+  userMessage: string,
+  conversationHistory: Array<{ role: string; content: string }>,
+  jobTitle: string,
+  skillsGap: string,
+): Promise<RahulChatResponse> {
+  const response = await fetch(`${API_BASE_URL}/roadmap/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      user_message: userMessage,
+      conversation_history: conversationHistory,
+      job_title: jobTitle,
+      skills_gap: skillsGap,
+    }),
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error((error as { detail?: string }).detail || "Chat failed");
+  }
   return response.json();
 }
 

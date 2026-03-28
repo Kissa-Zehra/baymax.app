@@ -507,10 +507,11 @@ async def search_jobs(
     job_title: str = Form(...),
     skills_summary: str = Form(""),
     skills_list: str = Form(""),  # comma-separated list of skills
+    user_id: str = Form("default"),
 ):
     """
     Search for matching jobs using Firecrawl (Agent 3: Zara).
-    Accepts job_title, skills_summary, and optional comma-separated skills_list.
+    Accepts job_title, skills_summary, optional comma-separated skills_list, and user_id.
     """
     try:
         from agents.job_search_agent import find_jobs
@@ -524,7 +525,7 @@ async def search_jobs(
             skills_list=parsed_skills,
         )
         try:
-            save_job_search("default", job_title, skills_summary)
+            save_job_search(user_id, job_title, skills_summary)
         except Exception:
             pass
         return {"jobs": jobs}
@@ -532,25 +533,182 @@ async def search_jobs(
         raise HTTPException(status_code=500, detail=f"Job search error: {str(e)}")
 
 
-# ── Career Roadmap ───────────────────────────────────────────────────────────
 @app.post("/roadmap")
 async def generate_roadmap(
     job_title: str = Form(...),
-    skills_gap: str = Form(...),
+    skills_gap: str = Form(""),
+    current_skills: str = Form(""),
+    interview_weak_areas: str = Form(""),
+    resume_analysis_raw: str = Form(""),
 ):
     """
-    Generate career roadmap (step 4 of pipeline).
+    Generate career roadmap (Agent 5: Rahul).
+    Accepts all upstream agent context for hyper-personalized output.
     """
     try:
         from agents.career_planner_agent import build_roadmap
-        
-        roadmap = build_roadmap(job_title=job_title, skills_gap=skills_gap)
+
+        roadmap = build_roadmap(
+            job_title=job_title,
+            skills_gap=skills_gap,
+            resume_analysis_raw=resume_analysis_raw,
+            job_market_context="",
+            current_skills=current_skills,
+            interview_weak_areas=interview_weak_areas,
+        )
         return {"roadmap": roadmap}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Roadmap generation error: {str(e)}")
 
 
-# ── Audio Transcription ───────────────────────────────────────────────────────
+
+# ── Save User Profile (cross-agent context) ───────────────────────────────────
+class SaveProfileRequest(BaseModel):
+    user_id: str
+    resume_text: str
+    analysis_result: dict
+    job_title: str
+
+
+@app.post("/resume/save-profile")
+async def save_user_profile(request: SaveProfileRequest):
+    """
+    Persist the user's full resume + analysis as their canonical profile in Mem0.
+    Called by the frontend after the Analyzer completes so all downstream agents
+    (Interview, Job Scout, Roadmap) can retrieve it.
+    """
+    try:
+        from agents.memory_agent import save_full_profile
+
+        ok = save_full_profile(
+            user_id=request.user_id,
+            resume_text=request.resume_text,
+            analysis=request.analysis_result,
+            job_title=request.job_title,
+        )
+        if not ok:
+            raise HTTPException(status_code=500, detail="Failed to save profile to memory")
+        return {"success": True, "user_id": request.user_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Save profile error: {str(e)}")
+
+
+# ── Get User Profile ──────────────────────────────────────────────────────────
+@app.get("/resume/profile/{user_id}")
+async def get_user_profile(user_id: str):
+    """
+    Retrieve a user's saved full profile from Mem0.
+    Used by the frontend on page load to restore session from the backend.
+    """
+    try:
+        from agents.memory_agent import get_full_profile
+
+        profile = get_full_profile(user_id)
+        if not profile:
+            raise HTTPException(status_code=404, detail="Profile not found for this user")
+        return profile
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Get profile error: {str(e)}")
+
+
+# ── Save Interview Result ─────────────────────────────────────────────────────
+class SaveInterviewRequest(BaseModel):
+    user_id: str
+    avg_score: float
+    weak_areas: str
+
+
+@app.post("/interview/save-result")
+async def save_interview_result_endpoint(request: SaveInterviewRequest):
+    """
+    Persist interview performance results in Mem0.
+    Called by the frontend when the mock interview session ends.
+    """
+    try:
+        from agents.memory_agent import save_interview_result
+
+        ok = save_interview_result(
+            user_id=request.user_id,
+            avg_score=request.avg_score,
+            weak_areas=request.weak_areas,
+        )
+        return {"success": ok}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Save interview error: {str(e)}")
+
+
+# ── Certifications Recommendation ─────────────────────────────────────────────
+class CertRequest(BaseModel):
+    job_title: str
+    skills_gap: List[str]
+    current_skills: List[str] = []
+
+
+@app.post("/roadmap/certifications")
+async def get_certifications(request: CertRequest):
+    """
+    Recommend 4-5 highly relevant certifications based on the user's specific skill
+    gaps and target role. Results are hyper-personalized — not generic.
+    """
+    try:
+        from agents.career_planner_agent import recommend_certifications
+
+        if not request.job_title or len(request.job_title.strip()) < 2:
+            raise HTTPException(status_code=400, detail="job_title is required")
+
+        certs = recommend_certifications(
+            job_title=request.job_title,
+            skills_gap=request.skills_gap,
+            current_skills=request.current_skills,
+        )
+        return {"certifications": certs}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Certifications error: {str(e)}")
+
+# ── Roadmap Chat (interactive Q&A with Rahul) ─────────────────────────────────
+class RoadmapChatRequest(BaseModel):
+    user_message: str
+    conversation_history: list = []
+    job_title: str = ""
+    skills_gap: str = ""
+
+
+@app.post("/roadmap/chat")
+async def roadmap_chat(request: RoadmapChatRequest):
+    """
+    Interactive follow-up Q&A with Rahul (career mentor).
+    Supports resource lookups, financial aid templates, and personalised answers.
+    """
+    try:
+        from agents.career_planner_agent import chat_with_rahul, get_financial_aid_template, FREE_RESOURCES
+
+        result = chat_with_rahul(
+            user_message=request.user_message,
+            conversation_history=request.conversation_history,
+            job_title=request.job_title,
+            skills_gap=request.skills_gap,
+        )
+
+        # If financial aid template was requested, generate it
+        if result.get("show_aid"):
+            template = get_financial_aid_template(
+                course_name=result.get("aid_course") or "[COURSE NAME]",
+                job_title=request.job_title or "[JOB TITLE]",
+                skill_area=request.skills_gap[:60] if request.skills_gap else "[SKILL AREA]",
+            )
+            result["aid_template"] = template
+
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Roadmap chat error: {str(e)}")
+
+
 @app.post("/interview/transcribe")
 async def transcribe_audio_endpoint(file: UploadFile = File(...)):
     """

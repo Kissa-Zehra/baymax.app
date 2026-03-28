@@ -42,7 +42,8 @@ interface AnalysisResult {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-const API_BASE = "http://127.0.0.1:8000";
+const API_BASE = "";  // relative — Vite proxy handles it
+
 
 async function analyzeResumeJSON(resumeText: string, jobDescription: string): Promise<AnalysisResult> {
   const res = await fetch(`${API_BASE}/resume/analyze`, {
@@ -134,16 +135,16 @@ const BulletItem = ({
 
 interface Props {
   onSwitchTab?: (tab: number) => void;
-  onAnalysisComplete?: (jobTitle: string, summary: string) => void;
-  // Builder resume state (for "Analyze Current Resume" option)
+  onAnalysisComplete?: (result: AnalysisResult, jobDescription: string, resumeText: string) => void;
   builderResumeText?: string;
+  userId?: string;
 }
 
 // ── Main Component ────────────────────────────────────────────────────────────
 
-const ResumeAnalyzer = ({ onSwitchTab, onAnalysisComplete, builderResumeText }: Props) => {
+const ResumeAnalyzer = ({ onSwitchTab, onAnalysisComplete, builderResumeText, userId = "default" }: Props) => {
   const { toast } = useToast();
-  const [useCurrentResume, setUseCurrentResume] = useState(false);
+  const [useCurrentResume, setUseCurrentResume] = useState(!!builderResumeText);
   const [pdfFile, setPdfFile] = useState<File | null>(null);
   const [jobDescription, setJobDescription] = useState("");
   const [result, setResult] = useState<AnalysisResult | null>(null);
@@ -178,10 +179,20 @@ const ResumeAnalyzer = ({ onSwitchTab, onAnalysisComplete, builderResumeText }: 
         throw new Error("No resume source selected");
       }
       setResult(data);
-      onAnalysisComplete?.(
-        jobDescription.split("\n")[0].slice(0, 60),
-        data.strengths.slice(0, 2).join(". ")
-      );
+      // Pass full structured result to Dashboard → useUserSession
+      const resumeText = (useCurrentResume && builderResumeText) ? builderResumeText : "";
+      onAnalysisComplete?.(data, jobDescription, resumeText);
+
+      // Persist to backend Mem0 (fire-and-forget)
+      try {
+        const { saveUserProfile } = await import("@/lib/api");
+        await saveUserProfile(
+          userId,
+          resumeText,
+          data as unknown as Record<string, unknown>,
+          jobDescription.split("\n")[0].slice(0, 80),
+        );
+      } catch { /* non-fatal */ }
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -208,6 +219,7 @@ const ResumeAnalyzer = ({ onSwitchTab, onAnalysisComplete, builderResumeText }: 
   });
 
   return (
+    <div className="flex flex-col">
     <div className="grid md:grid-cols-2 gap-0 min-h-[620px]" style={{ background: "#0a0a0a" }}>
       {/* ── Left Panel: Input ─────────────────────────────────────────── */}
       <div
@@ -368,16 +380,16 @@ const ResumeAnalyzer = ({ onSwitchTab, onAnalysisComplete, builderResumeText }: 
         {result && onSwitchTab && (
           <div className="flex gap-2">
             <button
-              onClick={() => onSwitchTab(4)}
-              className="flex-1 rounded-xl py-2.5 text-sm font-bold border border-red-500/40 text-red-400 hover:bg-red-500/10 transition-colors"
+              onClick={() => onSwitchTab(0)}
+              className="flex-1 rounded-xl py-2.5 text-sm font-bold border border-border text-muted-foreground hover:border-blue-500 hover:text-blue-400 transition-colors"
             >
-              🏗️ Open Builder →
+              🏗️ Back to Builder
             </button>
             <button
-              onClick={() => onSwitchTab(1)}
-              className="flex-1 rounded-xl py-2.5 text-sm font-bold border border-border text-muted-foreground hover:border-baymax-red hover:text-baymax-red transition-colors"
+              onClick={() => onSwitchTab(2)}
+              className="flex-1 rounded-xl py-2.5 text-sm font-bold border border-purple-500/40 text-purple-400 hover:bg-purple-500/10 transition-colors"
             >
-              🎤 Practice Interview →
+              🎤 Start Interview →
             </button>
           </div>
         )}
@@ -514,6 +526,32 @@ const ResumeAnalyzer = ({ onSwitchTab, onAnalysisComplete, builderResumeText }: 
         )}
       </div>
     </div>
+
+    {/* ── Navigation CTAs (shown after analysis) ── */}
+    {result && (
+      <div className="flex flex-wrap items-center gap-3 p-4" style={{ borderTop: "1px solid #1f1f1f", background: "#0a0a0a" }}>
+        <button
+          onClick={() => onSwitchTab?.(0)}
+          className="flex-1 min-w-[130px] flex items-center justify-center gap-2 py-3 rounded-xl font-bold text-sm transition-all"
+          style={{ background: "#1a1a1a", border: "1px solid #2a2a2a", color: "#aaa" }}
+        >
+          ← Back to Builder
+        </button>
+        {onSwitchTab && (
+          <button
+            onClick={() => onSwitchTab(2)}
+            className="flex-[2] min-w-[200px] flex items-center justify-center gap-2 py-3.5 rounded-xl font-bold text-white text-sm"
+            style={{
+              background: "linear-gradient(135deg, #7c3aed, #6d28d9)",
+              boxShadow: "0 4px 20px rgba(124,58,237,0.35)",
+            }}
+          >
+            🎤 Proceed to Mock Interview →
+          </button>
+        )}
+      </div>
+    )}
+  </div>
   );
 };
 
