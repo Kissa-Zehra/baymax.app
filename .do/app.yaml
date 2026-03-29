@@ -2,23 +2,23 @@ name: baymax-app
 region: nyc
 
 # ─────────────────────────────────────────────────────────────────────────────
-# BACKEND — FastAPI (Python)
+# BACKEND — FastAPI (Docker)
+# Source dir: backend/   ← DO finds Dockerfile here
 # ─────────────────────────────────────────────────────────────────────────────
 services:
   - name: backend
-    source_dir: backend
+    source_dir: /backend
+    dockerfile_path: /backend/Dockerfile
     github:
       repo: taha-zaidii/baymax.app
       branch: main
       deploy_on_push: true
-    build_command: pip install -r requirements.txt
-    run_command: uvicorn api:app --host 0.0.0.0 --port $PORT
-    environment_slug: python
     instance_size_slug: basic-xxs
     instance_count: 1
     http_port: 8080
     health_check:
       http_path: /health
+      initial_delay_seconds: 30
     envs:
       - key: GROQ_API_KEY
         scope: RUN_TIME
@@ -46,21 +46,21 @@ services:
         value: "false"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# FRONTEND — React/Vite (Static Site)
+# FRONTEND — React/Vite (Docker)
+# Source dir: frontend/  ← DO finds Dockerfile here
 # ─────────────────────────────────────────────────────────────────────────────
-static_sites:
   - name: frontend
-    source_dir: frontend
+    source_dir: /frontend
+    dockerfile_path: /frontend/Dockerfile
     github:
       repo: taha-zaidii/baymax.app
       branch: main
       deploy_on_push: true
-    build_command: npm install && npm run build
-    output_dir: dist
-    index_document: index.html
-    error_document: index.html   # SPA — all routes → index.html
-    envs:
-      - key: VITE_API_URL
-        scope: BUILD_TIME
-        # DO App Platform injects the backend's public URL automatically
-        value: ${backend.PUBLIC_URL}
+    instance_size_slug: basic-xxs
+    instance_count: 1
+    http_port: 8080
+    routes:
+      - path: /
+    build_args:
+      # DO automatically resolves this to the backend service's public URL
+      VITE_API_URL: ${backend.PUBLIC_URL}
