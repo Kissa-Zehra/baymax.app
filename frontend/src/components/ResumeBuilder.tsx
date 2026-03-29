@@ -203,16 +203,16 @@ const AIBtn = ({
 function buildHTML(d: ResumeState): string {
   const p = d.profile;
   const name = p.name || "Your Name";
-  const contact = [p.email, p.phone, p.location].filter(Boolean).join(" · ");
-  const links = [
-    p.url ? `<a href="${p.url}" style="color:#e53e3e">${p.url.replace(/https?:\/\//, "")}</a>` : ""
-  ].filter(Boolean).join(" · ");
+  const contactParts = [p.email, p.phone, p.location].filter(Boolean);
+  const urlPart = p.url ? `<a href="${p.url}" style="color:#000;text-decoration:underline">${p.url.replace(/https?:\/\//, "")}</a>` : "";
+  const contactLine = [...contactParts.map(c => `<span>${c}</span>`), urlPart ? `<span>${urlPart}</span>` : ""].filter(Boolean).join('<span style="margin:0 5px;color:#555"> | </span>');
 
+  // Section header: uppercase bold black label + full-width black underline
   const section = (title: string, html: string) => !html.trim() ? "" : `
-    <div style="margin-bottom:14px">
-      <div style="display:flex;align-items:center;gap:6px;margin-bottom:5px">
-        <span style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.1em;color:#e53e3e">${title}</span>
-        <div style="flex:1;height:1px;background:#e53e3e;opacity:0.4"></div>
+    <div style="margin-bottom:13px">
+      <div style="margin-bottom:4px">
+        <span style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.12em;color:#000">${title}</span>
+        <div style="height:1.5px;background:#000;margin-top:2px"></div>
       </div>
       ${html}
     </div>`;
@@ -220,15 +220,15 @@ function buildHTML(d: ResumeState): string {
   const expHTML = d.workExperiences
     .filter((e) => e.company || e.jobTitle)
     .map((e) => `
-      <div style="margin-bottom:9px">
-        <div style="display:flex;justify-content:space-between">
-          <strong style="font-size:12.5px">${e.jobTitle || "Role"}</strong>
-          <span style="font-size:11px;color:#666">${e.date}</span>
+      <div style="margin-bottom:8px">
+        <div style="display:flex;justify-content:space-between;align-items:baseline">
+          <strong style="font-size:12px;font-weight:700;color:#000">${e.jobTitle || "Role"}</strong>
+          <span style="font-size:10.5px;color:#000;font-style:italic">${e.date}</span>
         </div>
-        <div style="font-size:11.5px;color:#555;margin-bottom:3px">${e.company}</div>
+        <div style="font-size:11.5px;color:#000;font-style:italic;margin-bottom:2px">${e.company}</div>
         ${e.descriptions.filter(Boolean).length > 0
-          ? `<ul style="margin:0;padding-left:14px;font-size:11.5px;color:#333;line-height:1.6">${
-              e.descriptions.filter(Boolean).map((d) => `<li>${d.replace(/^[-•]\s*/, "")}</li>`).join("")
+          ? `<ul style="margin:3px 0 0;padding-left:16px;font-size:11.5px;color:#000;line-height:1.55">${
+              e.descriptions.filter(Boolean).map((d) => `<li style="margin-bottom:1px">${d.replace(/^[-•]\s*/, "")}</li>`).join("")
             }</ul>`
           : ""}
       </div>`).join("");
@@ -236,42 +236,58 @@ function buildHTML(d: ResumeState): string {
   const eduHTML = d.educations
     .filter((e) => e.school || e.degree)
     .map((e) => `
-      <div style="margin-bottom:8px">
-        <div style="display:flex;justify-content:space-between">
-          <strong style="font-size:12.5px">${e.degree || "Degree"}</strong>
-          <span style="font-size:11px;color:#666">${e.date}</span>
+      <div style="margin-bottom:7px">
+        <div style="display:flex;justify-content:space-between;align-items:baseline">
+          <strong style="font-size:12px;font-weight:700;color:#000">${e.degree || "Degree"}</strong>
+          <span style="font-size:10.5px;color:#000;font-style:italic">${e.date}</span>
         </div>
-        <div style="font-size:11.5px;color:#555">${e.school}${e.gpa ? ` · GPA: ${e.gpa}` : ""}</div>
+        <div style="font-size:11.5px;color:#000">${e.school}${e.gpa ? `<span style="margin-left:8px;color:#333"> GPA: ${e.gpa}</span>` : ""}</div>
       </div>`).join("");
 
   const projHTML = d.projects
     .filter((p) => p.project || p.descriptions.some(Boolean))
     .map((p) => `
       <div style="margin-bottom:8px">
-        <div style="display:flex;justify-content:space-between">
-          <strong style="font-size:12.5px">${p.project || "Project"}</strong>
-          <span style="font-size:11px;color:#666">${p.date}</span>
+        <div style="display:flex;justify-content:space-between;align-items:baseline">
+          <strong style="font-size:12px;font-weight:700;color:#000">${p.project || "Project"}</strong>
+          <span style="font-size:10.5px;color:#000;font-style:italic">${p.date}</span>
         </div>
         ${p.descriptions.filter(Boolean).length > 0
-          ? `<ul style="margin:2px 0 0;padding-left:14px;font-size:11.5px;color:#333;line-height:1.6">${
-              p.descriptions.filter(Boolean).map((d) => `<li>${d.replace(/^[-•]\s*/, "")}</li>`).join("")
+          ? `<ul style="margin:3px 0 0;padding-left:16px;font-size:11.5px;color:#000;line-height:1.55">${
+              p.descriptions.filter(Boolean).map((d) => `<li style="margin-bottom:1px">${d.replace(/^[-•]\s*/, "")}</li>`).join("")
             }</ul>`
           : ""}
       </div>`).join("");
 
-  const skillsHTML = d.skills.descriptions.filter(Boolean).join(", ");
+  const skillsHTML = d.skills.descriptions.filter(Boolean).join(" • ");
 
   return `<!DOCTYPE html><html><head><meta charset="UTF-8">
-<style>*{box-sizing:border-box;margin:0;padding:0}
-body{font-family:'Times New Roman',Times,serif;font-size:12px;color:#1a1a1a;background:white;padding:36px 40px;max-width:794px;margin:auto}
-a{color:#e53e3e;text-decoration:none}</style></head>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Arial', 'Helvetica Neue', Helvetica, sans-serif;
+    font-size: 12px;
+    color: #000;
+    background: white;
+    padding: 36px 44px;
+    max-width: 816px;
+    margin: auto;
+    line-height: 1.4;
+  }
+  h1 { color: #000; }
+  a { color: #000; }
+  ul { list-style-type: disc; }
+  li { color: #000; }
+</style></head>
 <body>
-  <div style="text-align:center;margin-bottom:14px">
-    <h1 style="font-size:22px;font-weight:700;letter-spacing:0.02em">${name}</h1>
-    ${contact ? `<div style="font-size:11px;color:#555;margin-top:3px">${contact}</div>` : ""}
-    ${links ? `<div style="font-size:11px;margin-top:2px">${links}</div>` : ""}
+
+  <!-- Header -->
+  <div style="text-align:center;margin-bottom:14px;padding-bottom:10px;border-bottom:2px solid #000">
+    <h1 style="font-size:24px;font-weight:700;letter-spacing:0.04em;color:#000;text-transform:uppercase">${name}</h1>
+    ${contactLine ? `<div style="font-size:10.5px;color:#000;margin-top:5px;line-height:1.6">${contactLine}</div>` : ""}
   </div>
-  ${section("Professional Summary", p.summary ? `<p style="font-size:12px;color:#333;line-height:1.55">${p.summary}</p>` : "")}
+
+  ${section("Summary", p.summary ? `<p style="font-size:11.5px;color:#000;line-height:1.55;text-align:justify">${p.summary}</p>` : "")}
   ${section("Work Experience", expHTML)}
   ${section("Education", eduHTML)}
   ${section("Skills", skillsHTML ? `<p style="font-size:12px;color:#333;line-height:1.6">${skillsHTML}</p>` : "")}
