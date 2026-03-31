@@ -73,7 +73,26 @@ async function analyzeResumePDF(file: File, jobDescription: string): Promise<Ana
   return res.json();
 }
 
+// ── Normalize API response — fill in all missing/null fields ────────────────
+// Without this, null fields crash the render (TypeError → blank white page)
+function normalizeResult(data: unknown): AnalysisResult {
+  const d = (data ?? {}) as Record<string, unknown>;
+  return {
+    overall_score:     typeof d.overall_score  === "number" ? d.overall_score  : 0,
+    ats_score:         typeof d.ats_score       === "number" ? d.ats_score       : 0,
+    match_score:       typeof d.match_score     === "number" ? d.match_score     : 0,
+    strengths:         Array.isArray(d.strengths)         ? (d.strengths as string[])         : [],
+    weaknesses:        Array.isArray(d.weaknesses)        ? (d.weaknesses as string[])        : [],
+    missing_keywords:  Array.isArray(d.missing_keywords)  ? (d.missing_keywords as string[])  : [],
+    improved_bullets:  Array.isArray(d.improved_bullets)  ? (d.improved_bullets as ImprovedBullet[]) : [],
+    section_feedback:  (d.section_feedback && typeof d.section_feedback === "object")
+      ? (d.section_feedback as SectionFeedback)
+      : { education: "", skills: "", projects: "", experience: "" },
+  };
+}
+
 // ── Sub-components ────────────────────────────────────────────────────────────
+
 
 const scoreColor = (s: number) => {
   if (s >= 80) return { bg: "#0d2818", border: "#166534", text: "#4ade80", bar: "#22c55e" };
@@ -178,7 +197,7 @@ const ResumeAnalyzer = ({ onSwitchTab, onAnalysisComplete, builderResumeText, us
       } else {
         throw new Error("No resume source selected");
       }
-      setResult(data);
+      setResult(normalizeResult(data));
       // Pass full structured result to Dashboard → useUserSession
       const resumeText = (useCurrentResume && builderResumeText) ? builderResumeText : "";
       onAnalysisComplete?.(data, jobDescription, resumeText);
