@@ -337,6 +337,21 @@ baymax.app/
 
 ---
 
+---
+
+This project was developed as part of a team during the AI Mustaqbil 2.0 Hackathon.
+
+Team Members:
+- Kissa Zehra
+- Syed Taha Zaidi
+- Amna Khan
+- Aiza Gazyani
+
+Original Repository:
+https://github.com/taha-zaidii/baymax.app
+
+
+
 ## 📝 License
 
 MIT — see [LICENSE](LICENSE)
